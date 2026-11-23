@@ -129,7 +129,7 @@ html,body{margin:0;padding:0;background:#eef2f7;color:var(--ink);font-family:Ari
       <span class="section-label">Bill To · Client / Hospital</span>
       <p class="client-name">{{ i.client_name }}</p>
       <p>{{ i.client_address or '' }}</p>
-      {% if i.invoice_type == 'GST' %}<p><b>GSTIN:</b> {{ i.client_gstin or 'Unregistered' }}</p><p><b>Place of Supply:</b> {{ i.place_of_supply }}</p>{% endif %}
+      {% if i.invoice_type == 'GST' %}{% if i.client_gstin %}<p><b>GSTIN:</b> {{ i.client_gstin }}</p>{% else %}<p><b>GSTIN:</b> Not Provided (Unregistered)</p>{% endif %}<p><b>Place of Supply:</b> {{ i.place_of_supply }}</p>{% endif %}
     </section>
     {% if i.qr_code %}<div class="qr-wrap"><img src="{{ i.qr_code }}" alt="Seller QR code"><p>Scan to pay</p></div>{% endif %}
   </div>
