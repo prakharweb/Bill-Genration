@@ -856,6 +856,10 @@ def create_invoice(
     if invoice_type not in ("GST", "Non-GST"):
         raise HTTPException(400, "Invalid invoice type")
 
+    # Hospital GSTIN is optional. State is still mandatory for GST invoices
+    # because the place of supply determines the tax type.
+    normalized_client_gstin = (client_gstin or "").strip().upper()
+
     cgst_amount = sgst_amount = igst_amount = 0.0
     place_of_supply = client_state.strip() if client_state else ""
     total_amount = round(amount, 2)
@@ -872,7 +876,10 @@ def create_invoice(
                 raise HTTPException(400, "Select valid Supplier and Hospital states")
             if round(float(gst_rate), 2) != 18.0:
                 raise HTTPException(400, "This invoice setup is configured for 18% GST")
-            if client_gstin and not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]", client_gstin.strip().upper()):
+            if normalized_client_gstin and not re.fullmatch(
+                r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]",
+                normalized_client_gstin
+            ):
                 raise HTTPException(400, "Hospital GSTIN format is invalid")
             place_of_supply = client_state
             tax = round(amount * float(gst_rate) / 100, 2)
@@ -899,7 +906,7 @@ def create_invoice(
             """, (
                 invoice_no, invoice_date, user["id"], seller_id, client_name,
                 client_address, candidate_name, designation, doj, salary,
-                description, amount, invoice_type, client_gstin.strip().upper(),
+                description, amount, invoice_type, normalized_client_gstin or None,
                 client_state, place_of_supply, float(gst_rate), cgst_amount,
                 sgst_amount, igst_amount, total_amount
             ))
