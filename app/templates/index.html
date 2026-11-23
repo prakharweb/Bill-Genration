@@ -68,8 +68,8 @@
             <label class="wide">Client Address<textarea name="client_address"></textarea></label>
             <div id="gst-client-fields" class="wide gst-fields" hidden>
                 <div class="gst-grid">
-                    <label>Hospital GSTIN (optional for unregistered client)<input name="client_gstin" maxlength="15" placeholder="15-character GSTIN"></label>
-                    <label>Hospital State <select name="client_state"><option value="">Select State</option>{% for st in indian_states %}<option value="{{ st }}">{{ st }}</option>{% endfor %}</select></label>
+                    <label>Hospital GSTIN (Optional)<input name="client_gstin" maxlength="15" autocomplete="off" placeholder="Enter only if Hospital is GST registered"><small class="gst-hint">Leave blank if the Hospital does not have a GSTIN.</small></label>
+                    <label>Hospital State (Required)<select name="client_state"><option value="">Select State</option>{% for st in indian_states %}<option value="{{ st }}">{{ st }}</option>{% endfor %}</select><small class="gst-hint">GST will be calculated using the selected State, even when GSTIN is blank.</small></label>
                     <label>GST Rate<input type="text" value="18% (fixed)" readonly><input type="hidden" name="gst_rate" value="18"></label>
                 </div>
                 <p class="gst-hint">GST is set to 18%: same state = CGST 9% + SGST 9%; different states = IGST 18%.</p>
