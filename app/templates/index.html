@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/style.css">
+    <title>Recruitment Invoice Manager</title>
+</head>
+<body>
+<header>
+    <div>
+        <h1>Recruitment Invoice Manager</h1>
+        <small>Signed in as {{ user.full_name or user.username }} · {{ user.role }}</small>
+    </div>
+    <form method="post" action="/logout"><button type="submit" class="secondary">Logout</button></form>
+</header>
+<main>
+    <div class="toolbar" id="invoices"><h2>Invoices</h2><a class="button" href="/export.csv">Export CSV</a></div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Voucher No.</th><th>Date</th><th>Seller</th><th>Client</th>
+                    <th>Candidate</th><th>Amount</th><th>Created By</th>
+                    <th>Remark</th><th>Payment Status</th><th>Invoice Status</th><th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for i in invoices %}
+                <tr>
+                    <td>{{ i.invoice_no }}</td>
+                    <td>{{ i.invoice_date }}</td>
+                    <td>{{ i.seller_name }}</td>
+                    <td>{{ i.client_name }}</td>
+                    <td>{{ i.candidate_name }}</td>
+                    <td>₹{{ "{:,.2f}".format((i.total_amount if i.invoice_type == 'GST' else i.amount) or 0) }}</td>
+                    <td>{{ i.full_name or i.username or '—' }}</td>
+                    <td style="min-width:190px;white-space:normal;">
+                        {% if user.role == 'admin' %}
+                        <input form="payment-form-{{ i.id }}" type="text" name="remark" value="{{ i.remark or '' }}" maxlength="2000" placeholder="Add remark" aria-label="Remark for {{ i.invoice_no }}" style="width:100%;min-width:150px;padding:7px;border:1px solid #cbd5e1;border-radius:6px;">
+                        {% else %}{{ i.remark or '—' }}{% endif %}
+                    </td>
+                    <td>
+                        {% if user.role == 'admin' %}
+                        <select form="payment-form-{{ i.id }}" name="payment_status" aria-label="Payment status for {{ i.invoice_no }}" style="width:100%;min-width:110px;padding:7px;border:1px solid #cbd5e1;border-radius:6px;">
+                            <option value="Due" {% if (i.payment_status or 'Due') == 'Due' %}selected{% endif %}>Due</option>
+                            <option value="Not Due" {% if i.payment_status == 'Not Due' %}selected{% endif %}>Not Due</option>
+                            <option value="Received" {% if i.payment_status == 'Received' %}selected{% endif %}>Received</option>
+                        </select>
+                        {% else %}{{ i.payment_status or 'Due' }}{% endif %}
+                    </td>
+                    <td>{{ i.status }}</td>
+                    <td style="white-space:nowrap;"><a href="/invoice/{{ i.id }}" target="_blank" rel="noopener noreferrer">View / Print</a>{% if user.role == 'admin' %}<form id="payment-form-{{ i.id }}" method="post" action="/invoices/{{ i.id }}/payment-details" style="display:inline-block;margin:4px 4px 0 0"><button type="submit" style="padding:6px 9px;">Save</button></form><form method="post" action="/invoices/{{ i.id }}/delete" style="display:inline;margin-left:4px" onsubmit="return confirm('Permanently delete invoice {{ i.invoice_no }}? This cannot be undone.');"><button type="submit" class="secondary" style="background:#b91c1c;color:white;padding:6px 9px">Delete</button></form>{% endif %}</td>
+                </tr>
+            {% else %}<tr><td colspan="11">No invoices yet.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <section class="panel">
+        <h2>Create Invoice</h2>
+        <form method="post" action="/invoices" class="form-grid" id="invoice-create-form">
+            <label>Invoice Type<select name="invoice_type" id="invoice-type"><option value="Non-GST">Non-GST Invoice</option><option value="GST">GST Invoice</option></select></label>
+            <label>Voucher No.<input name="invoice_no" placeholder="Leave blank for automatic number"></label>
+            <label>Invoice Date<input type="date" name="invoice_date" value="{{ today }}" required></label>
+            <label>Seller Profile<select name="seller_id" id="invoice-seller-select" required><option value="">Select Seller</option>{% for s in sellers %}{% if s.active %}<option value="{{ s.id }}">{{ s.name }}</option>{% endif %}{% endfor %}</select></label>
+            <label>Client / Hospital Name<input name="client_name" required></label>
+            <label class="wide">Client Address<textarea name="client_address"></textarea></label>
+            <div id="gst-client-fields" class="wide gst-fields" hidden>
+                <div class="gst-grid">
+                    <label>Hospital GSTIN (optional for unregistered client)<input name="client_gstin" maxlength="15" placeholder="15-character GSTIN"></label>
+                    <label>Hospital State <select name="client_state"><option value="">Select State</option>{% for st in indian_states %}<option value="{{ st }}">{{ st }}</option>{% endfor %}</select></label>
+                    <label>GST Rate<input type="text" value="18% (fixed)" readonly><input type="hidden" name="gst_rate" value="18"></label>
+                </div>
+                <p class="gst-hint">GST is set to 18%: same state = CGST 9% + SGST 9%; different states = IGST 18%.</p>
+            </div>
+            <label>Candidate Name<input name="candidate_name" required></label>
+            <label>Designation<input name="designation"></label>
+            <label>Date of Joining<input type="date" name="doj"></label>
+            <label>Monthly Salary (₹)<input type="number" name="salary" min="0" step="0.01" value="0"></label>
+            <label>Service Description<input name="description" value="Recruitment / Manpower Supply"></label>
+            <label>Taxable Amount / Amount to be Charged (₹)<input type="number" name="amount" min="0" step="0.01" required></label>
+            <div id="gst-live-preview" class="wide gst-preview" hidden>GST amounts will be calculated when the invoice is created based on Seller State and Hospital State.</div>
+            <div class="wide"><button type="submit">Create Invoice</button></div>
+        </form>
+    </section>
+
+    {% if user.role == 'admin' %}
+    <div class="columns">
+        <section class="panel">
+            <h2>Add Seller Profile</h2>
+            <form method="post" action="/sellers" class="form-grid" enctype="multipart/form-data">
+                <label>Seller Name<input name="name" required></label>
+                <label>Bank Name<input name="bank_name"></label>
+                <label class="wide">Seller Address<textarea name="address"></textarea></label>
+                <label>Bank Account Number<input name="bank_account"></label>
+                <label>IFSC Code<input name="ifsc"></label>
+                <label>PAN Number<input name="pan"></label>
+                <label>MSME Registration<input name="msme"></label>
+                <label>Email<input type="email" name="email"></label>
+                <label>Phone<input name="phone"></label>
+                <label>Supplier State<select name="state" required>{% for st in indian_states %}<option value="{{ st }}" {% if st == 'Uttar Pradesh' %}selected{% endif %}>{{ st }}</option>{% endfor %}</select></label>
+                <label>Supplier GSTIN<input name="gstin" maxlength="15" placeholder="15-character GSTIN"></label>
+                <label class="wide">Company Logo (PNG, JPG, WEBP; max 3 MB)<input type="file" name="logo_file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"></label>
+                <label class="wide">QR Code Image (PNG, JPG, WEBP; max 3 MB)<input type="file" name="qr_file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"></label>
+                <div class="wide"><button type="submit">Add Seller</button></div>
+            </form>
+
+            <h3 id="seller-profiles">Seller Profiles (Edit / Delete)</h3>
+            {% for s in sellers %}
+            <details class="panel" style="margin:12px 0;">
+                <summary><strong>{{ s.name }}</strong> · {{ s.bank_name or 'Bank not set' }} · {{ s.ifsc or 'IFSC not set' }} · {{ 'Active' if s.active else 'Inactive' }}</summary>
+                <form method="post" action="/sellers/{{ s.id }}/edit" class="form-grid" enctype="multipart/form-data" style="margin-top:14px;">
+                    <label>Seller Name<input name="name" value="{{ s.name }}" required></label>
+                    <label>Bank Name<input name="bank_name" value="{{ s.bank_name or '' }}"></label>
+                    <label class="wide">Seller Address<textarea name="address">{{ s.address or '' }}</textarea></label>
+                    <label>Bank Account Number<input name="bank_account" value="{{ s.bank_account or '' }}"></label>
+                    <label>IFSC Code<input name="ifsc" value="{{ s.ifsc or '' }}"></label>
+                    <label>PAN Number<input name="pan" value="{{ s.pan or '' }}"></label>
+                    <label>MSME Registration<input name="msme" value="{{ s.msme or '' }}"></label>
+                    <label>Email<input type="email" name="email" value="{{ s.email or '' }}"></label>
+                    <label>Phone<input name="phone" value="{{ s.phone or '' }}"></label>
+                    <label>Supplier State<select name="state" required>{% for st in indian_states %}<option value="{{ st }}" {% if (s.state or 'Uttar Pradesh') == st %}selected{% endif %}>{{ st }}</option>{% endfor %}</select></label>
+                    <label>Supplier GSTIN<input name="gstin" maxlength="15" value="{{ s.gstin or '' }}"></label>
+                    {% if s.company_logo %}<div class="wide"><p>Current company logo:</p><img src="{{ s.company_logo }}" alt="Company logo" style="max-width:180px;max-height:100px;object-fit:contain"></div>{% endif %}
+                    <label class="wide">Replace Company Logo (leave blank to keep current)<input type="file" name="logo_file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"></label>
+                    {% if s.qr_code %}<div class="wide"><p>Current QR code:</p><img src="{{ s.qr_code }}" alt="Seller QR code" style="max-width:160px;max-height:160px;object-fit:contain"></div>{% endif %}
+                    <label class="wide">Replace QR Code (leave blank to keep current)<input type="file" name="qr_file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"></label>
+                    <div class="wide"><button type="submit">Save Seller Changes</button></div>
+                </form>
+                <form method="post" action="/sellers/{{ s.id }}/delete" onsubmit="return confirm('Delete/deactivate this seller profile?');" style="margin-top:8px;">
+                    <button type="submit" class="secondary">Delete Seller</button>
+                </form>
+                {% if s.active == 0 %}<p>This seller is inactive and cannot be selected for new invoices. Existing invoices remain linked.</p>{% endif %}
+            </details>
+            {% else %}<p>No seller profiles added yet.</p>{% endfor %}
+        </section>
+
+        <section class="panel">
+            <h2>My Account Password</h2>
+            <p><small>Change your own password by confirming your current password. Passwords are never displayed in readable form.</small></p>
+            <form method="post" action="/account/change-password" class="password-change-form">
+                <label>Current Password
+                    <span class="password-field"><input type="password" name="current_password" id="own-current-password" autocomplete="current-password" required><button type="button" class="secondary password-toggle" data-target="own-current-password">Show</button></span>
+                </label>
+                <label>New Password (minimum 8 characters)
+                    <span class="password-field"><input type="password" name="new_password" id="own-new-password" minlength="8" autocomplete="new-password" required><button type="button" class="secondary password-toggle" data-target="own-new-password">Show</button></span>
+                </label>
+                <label>Confirm New Password
+                    <span class="password-field"><input type="password" name="confirm_password" id="own-confirm-password" minlength="8" autocomplete="new-password" required><button type="button" class="secondary password-toggle" data-target="own-confirm-password">Show</button></span>
+                </label>
+                <button type="submit">Change My Password</button>
+            </form>
+
+            <h2>Create User</h2>
+            <form method="post" action="/users" class="create-user-form">
+                <label>Full Name<input type="text" name="full_name" placeholder="Divyanshu Srivastava" required></label>
+                <label>Username<input type="text" name="username" placeholder="divyanshu" required></label>
+                <label>Password (minimum 8 characters)<span class="password-field"><input id="create-user-password" type="password" name="password" minlength="8" required><button type="button" class="secondary password-toggle" data-target="create-user-password">Show</button></span></label>
+                <label>Role<select name="role"><option value="user">User</option><option value="admin">Admin</option></select></label>
+                <button type="submit">Create User</button>
+            </form>
+            <h3 id="user-management">Registered Users / User Management</h3>
+            <p><small>For security, existing passwords cannot be viewed. Admin can set a new password below. Use the Show button to check a password before saving it.</small></p>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Full Name</th><th>Username</th><th>Role</th><th>Account Status</th><th>Set / Reset Password</th><th>Actions</th></tr></thead>
+                    <tbody>
+                    {% for usr in users %}
+                    <tr>
+                        <form id="user-edit-{{ usr.id }}" method="post" action="/users/{{ usr.id }}/edit"></form>
+                        <td><input form="user-edit-{{ usr.id }}" name="full_name" value="{{ usr.full_name or usr.username }}" required></td>
+                        <td><input form="user-edit-{{ usr.id }}" name="username" value="{{ usr.username }}" required></td>
+                        <td><select form="user-edit-{{ usr.id }}" name="role" {% if usr.id == user.id %}disabled{% endif %}><option value="user" {% if usr.role == 'user' %}selected{% endif %}>User</option><option value="admin" {% if usr.role == 'admin' %}selected{% endif %}>Admin</option></select>{% if usr.id == user.id %}<input form="user-edit-{{ usr.id }}" type="hidden" name="role" value="admin">{% endif %}</td>
+                        <td><select form="user-edit-{{ usr.id }}" name="active" {% if usr.id == user.id %}disabled{% endif %}><option value="1" {% if usr.active %}selected{% endif %}>Active</option><option value="0" {% if not usr.active %}selected{% endif %}>Inactive</option></select>{% if usr.id == user.id %}<input form="user-edit-{{ usr.id }}" type="hidden" name="active" value="1">{% endif %}</td>
+                        <td><span class="password-field"><input form="user-edit-{{ usr.id }}" id="reset-password-{{ usr.id }}" type="password" name="new_password" minlength="8" placeholder="Leave blank to keep"><button type="button" class="secondary password-toggle" data-target="reset-password-{{ usr.id }}">Show</button></span></td>
+                        <td style="white-space:nowrap;"><button form="user-edit-{{ usr.id }}" type="submit">Save</button>
+                        {% if usr.id != user.id %}<form method="post" action="/users/{{ usr.id }}/delete" style="display:inline" onsubmit="return confirm('Delete user {{ usr.username }}? Users with linked invoices cannot be deleted until those invoices are removed.');"><button type="submit" class="secondary" style="background:#b91c1c;color:white;padding:5px 8px">Delete</button></form>{% else %}<small>Current account</small>{% endif %}</td>
+                    </tr>
+                    {% else %}<tr><td colspan="6">No users found.</td></tr>{% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <p><small>Safety: users linked to invoices are protected until their invoice records are deleted. The current admin account and last active admin cannot be deactivated, demoted, or deleted.</small></p>
+        </section>
+    </div>
+    {% endif %}
+    <footer>Recruitment Invoice Manager. Keep database backups and protect seller bank details.</footer>
+</main>
+
+<style>
+/* Admin area: balanced, full-width sections */
+.columns {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 22px;
+    align-items: start;
+}
+.columns > .panel {
+    width: 100%;
+    min-width: 0;
+    padding: 24px;
+    border: 1px solid #dbe4f0;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 5px 18px rgba(30, 55, 90, .06);
+}
+.columns > .panel h2 {
+    margin: 0 0 12px;
+    color: #1e2d45;
+    font-size: 23px;
+}
+.columns > .panel h3 {
+    margin: 26px 0 8px;
+    padding-top: 18px;
+    border-top: 1px solid #e6edf5;
+    color: #26364f;
+    font-size: 18px;
+}
+.columns > .panel > p { color: #64748b; }
+
+/* Seller profile forms */
+.columns .form-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 15px;
+    align-items: start;
+}
+.columns .form-grid .wide { grid-column: 1 / -1; }
+.columns label {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    min-width: 0;
+    color: #34445c;
+    font-size: 13px;
+    font-weight: 600;
+}
+.columns input,
+.columns select,
+.columns textarea {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    padding: 10px 12px;
+    border: 1px solid #cbd7e6;
+    border-radius: 8px;
+    background: #fff;
+    color: #1e293b;
+    font: inherit;
+}
+.columns textarea { min-height: 85px; resize: vertical; }
+.columns input:focus,
+.columns select:focus,
+.columns textarea:focus {
+    outline: 2px solid rgba(37, 99, 235, .16);
+    border-color: #2563eb;
+}
+
+/* Password controls: labels above fields, no squeezed horizontal layout */
+.password-change-form {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    align-items: end;
+    margin: 18px 0 28px;
+    padding: 18px;
+    border: 1px solid #e1e9f3;
+    border-radius: 12px;
+    background: #f8faff;
+}
+.password-change-form label { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.password-field { display: flex; align-items: stretch; gap: 7px; width: 100%; min-width: 0; }
+.password-field input { flex: 1; min-width: 0; width: 100%; }
+.password-toggle { flex: 0 0 auto; white-space: nowrap; padding: 8px 12px !important; font-size: 12px; }
+.password-change-form > button { min-height: 42px; white-space: nowrap; }
+
+/* Create-user form */
+.create-user-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    align-items: end;
+    margin: 16px 0 24px;
+    padding: 18px;
+    border: 1px solid #e1e9f3;
+    border-radius: 12px;
+    background: #f8faff;
+}
+.create-user-form label { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.create-user-form > button { min-height: 42px; justify-self: start; }
+
+/* User table stays readable and scrolls instead of crushing columns */
+.columns .table-wrap { width: 100%; overflow-x: auto; border: 1px solid #e1e8f0; border-radius: 10px; }
+.columns .table-wrap table { width: 100%; min-width: 1050px; border-collapse: collapse; }
+.columns .table-wrap th { background: #eff5fc; color: #25364e; text-align: left; padding: 13px 12px; white-space: nowrap; }
+.columns .table-wrap td { padding: 12px; border-top: 1px solid #e5ebf3; vertical-align: middle; }
+.columns .table-wrap td input,
+.columns .table-wrap td select { min-width: 125px; }
+.columns .table-wrap td .password-field { min-width: 220px; }
+.columns details.panel { padding: 15px; border: 1px solid #e1e8f0; border-radius: 10px; background: #fbfcfe; }
+.columns details summary { cursor: pointer; color: #26364f; }
+
+@media (max-width: 900px) {
+    .password-change-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .columns .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+    .columns > .panel { padding: 15px; }
+    .password-change-form,
+    .create-user-form,
+    .columns .form-grid { grid-template-columns: minmax(0, 1fr); }
+    .password-change-form > button,
+    .create-user-form > button { width: 100%; }
+}
+</style>
+<script>
+document.addEventListener('click', function(event) {
+    const button = event.target.closest('.password-toggle');
+    if (!button) return;
+    const field = document.getElementById(button.dataset.target);
+    if (!field) return;
+    const reveal = field.type === 'password';
+    field.type = reveal ? 'text' : 'password';
+    button.textContent = reveal ? 'Hide' : 'Show';
+});
+</script>
+
+
+<style>
+.gst-fields{padding:16px;border:1px solid #cbd8e8;border-radius:12px;background:#f7faff}
+.gst-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.gst-hint,.gst-preview{font-size:13px;color:#475569;margin:10px 0 0}
+.gst-preview{padding:12px 14px;border-radius:8px;background:#eef5ff;border:1px solid #d5e3f5}
+@media(max-width:700px){.gst-grid{grid-template-columns:1fr}}
+</style>
+<script>
+(function(){
+ const type=document.getElementById('invoice-type');
+ const fields=document.getElementById('gst-client-fields');
+ const preview=document.getElementById('gst-live-preview');
+ const seller=document.getElementById('invoice-seller-select');
+ if(!type||!fields)return;
+ function chooseSpaceConsultant(){
+   if(!seller)return;
+   const match=Array.from(seller.options).find(option =>
+     option.value && option.textContent.trim().toLowerCase()==='space consultant'
+   );
+   if(match) seller.value=match.value;
+ }
+ function toggle(){
+   const gst=type.value==='GST';
+   fields.hidden=!gst;
+   if(preview) preview.hidden=!gst;
+   if(gst) chooseSpaceConsultant();
+ }
+ type.addEventListener('change',toggle);
+ toggle();
+})();
+</script>
+
+</body>
+</html>
