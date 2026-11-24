@@ -2,6 +2,7 @@
 import os
 import io
 import csv
+import base64
 import sqlite3
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -52,11 +53,12 @@ app.mount(
 
 templates = Jinja2Templates(directory="app/templates")
 
-# QR images are stored under app/static/uploads. On Render Free this local
-# folder is ephemeral; use persistent object storage for permanent QR images.
+# Seller logo and QR images are stored as data URIs in the database.
+# This keeps them available across Render restarts and redeploys, provided
+# DATABASE_URL points to persistent PostgreSQL (for example Neon).
 UPLOAD_DIR = os.path.join("app", "static", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-MAX_QR_BYTES = 3 * 1024 * 1024  # 3 MB
+MAX_QR_BYTES = 3 * 1024 * 1024  # 3 MB per image
 
 
 # =========================================================
@@ -342,6 +344,7 @@ def init_db():
 @app.on_event("startup")
 def startup():
     init_db()
+    migrate_legacy_seller_images()
 
 
 # =========================================================
@@ -594,19 +597,30 @@ def create_user(
 # =========================================================
 
 def save_qr_upload(qr_file: UploadFile | None) -> str | None:
-    """Validate and save an optional QR image; return its static URL path."""
+    """Validate an uploaded logo/QR image and store it in the DB as a data URI.
+
+    The existing DB columns are TEXT, so this works with both SQLite and
+    PostgreSQL without adding a separate media service or schema migration.
+    """
     if not qr_file or not qr_file.filename:
         return None
-    allowed = {".png", ".jpg", ".jpeg", ".webp"}
+
+    allowed_mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
     ext = os.path.splitext(qr_file.filename.lower())[1]
-    if ext not in allowed:
-        raise HTTPException(400, "QR code must be PNG, JPG, JPEG, or WEBP")
+    if ext not in allowed_mime:
+        raise HTTPException(400, "Image must be PNG, JPG, JPEG, or WEBP")
+
     content = qr_file.file.read(MAX_QR_BYTES + 1)
     if len(content) > MAX_QR_BYTES:
-        raise HTTPException(400, "QR image must be 3 MB or smaller")
+        raise HTTPException(400, "Image must be 3 MB or smaller")
     if not content:
         return None
-    # Check the image signature instead of trusting the extension alone.
+
     signatures = {
         ".png": content.startswith(b"\x89PNG\r\n\x1a\n"),
         ".jpg": content.startswith(b"\xff\xd8\xff"),
@@ -615,11 +629,47 @@ def save_qr_upload(qr_file: UploadFile | None) -> str | None:
     }
     if not signatures.get(ext, False):
         raise HTTPException(400, "Uploaded file does not appear to be a valid image")
-    filename = secrets.token_hex(16) + ext
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    with open(os.path.join(UPLOAD_DIR, filename), "wb") as f:
-        f.write(content)
-    return "/static/uploads/" + filename
+
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"data:{allowed_mime[ext]};base64,{encoded}"
+
+
+def migrate_legacy_seller_images():
+    """Convert old /static/uploads paths to DB data URIs when files still exist."""
+    with connect() as c:
+        sellers = c.execute(
+            "SELECT id, qr_code, company_logo FROM sellers"
+        ).fetchall()
+        for seller in sellers:
+            updates = {}
+            for column in ("qr_code", "company_logo"):
+                value = seller.get(column)
+                if not value or not value.startswith("/static/uploads/"):
+                    continue
+                filename = os.path.basename(value)
+                old_path = os.path.join(UPLOAD_DIR, filename)
+                if not os.path.isfile(old_path):
+                    # The file was already removed by an ephemeral deployment.
+                    # User can re-upload it once; future deployments will retain it.
+                    continue
+                try:
+                    with open(old_path, "rb") as image_file:
+                        content = image_file.read(MAX_QR_BYTES + 1)
+                    if not content or len(content) > MAX_QR_BYTES:
+                        continue
+                    ext = os.path.splitext(filename.lower())[1]
+                    mime = {".png": "image/png", ".jpg": "image/jpeg",
+                            ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(ext)
+                    if not mime:
+                        continue
+                    updates[column] = f"data:{mime};base64," + base64.b64encode(content).decode("ascii")
+                except OSError:
+                    continue
+            if updates:
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                params = list(updates.values()) + [seller["id"]]
+                c.execute(f"UPDATE sellers SET {assignments} WHERE id = ?", params)
+        c.commit()
 
 
 @app.post("/users/{user_id}/edit")
@@ -856,10 +906,6 @@ def create_invoice(
     if invoice_type not in ("GST", "Non-GST"):
         raise HTTPException(400, "Invalid invoice type")
 
-    # Hospital GSTIN is optional. State is still mandatory for GST invoices
-    # because the place of supply determines the tax type.
-    normalized_client_gstin = (client_gstin or "").strip().upper()
-
     cgst_amount = sgst_amount = igst_amount = 0.0
     place_of_supply = client_state.strip() if client_state else ""
     total_amount = round(amount, 2)
@@ -876,10 +922,7 @@ def create_invoice(
                 raise HTTPException(400, "Select valid Supplier and Hospital states")
             if round(float(gst_rate), 2) != 18.0:
                 raise HTTPException(400, "This invoice setup is configured for 18% GST")
-            if normalized_client_gstin and not re.fullmatch(
-                r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]",
-                normalized_client_gstin
-            ):
+            if client_gstin and not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]", client_gstin.strip().upper()):
                 raise HTTPException(400, "Hospital GSTIN format is invalid")
             place_of_supply = client_state
             tax = round(amount * float(gst_rate) / 100, 2)
@@ -906,7 +949,7 @@ def create_invoice(
             """, (
                 invoice_no, invoice_date, user["id"], seller_id, client_name,
                 client_address, candidate_name, designation, doj, salary,
-                description, amount, invoice_type, normalized_client_gstin or None,
+                description, amount, invoice_type, client_gstin.strip().upper(),
                 client_state, place_of_supply, float(gst_rate), cgst_amount,
                 sgst_amount, igst_amount, total_amount
             ))
